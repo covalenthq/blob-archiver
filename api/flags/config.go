@@ -10,10 +10,11 @@ import (
 )
 
 type APIConfig struct {
-	LogConfig     oplog.CLIConfig
-	MetricsConfig opmetrics.CLIConfig
-	BeaconConfig  common.BeaconConfig
-	StorageConfig common.StorageConfig
+	LogConfig      oplog.CLIConfig
+	MetricsConfig  opmetrics.CLIConfig
+	BeaconConfig   common.BeaconConfig
+	StorageConfig  common.StorageConfig
+	UpstreamConfig common.UpstreamConfig
 
 	ListenAddr string
 }
@@ -36,10 +37,11 @@ func (c APIConfig) Check() error {
 
 func ReadConfig(cliCtx *cli.Context) APIConfig {
 	return APIConfig{
-		LogConfig:     oplog.ReadCLIConfig(cliCtx),
-		MetricsConfig: opmetrics.ReadCLIConfig(cliCtx),
-		BeaconConfig:  common.NewBeaconConfig(cliCtx),
-		StorageConfig: common.NewStorageConfig(cliCtx),
-		ListenAddr:    cliCtx.String(ListenAddressFlag.Name),
+		LogConfig:      oplog.ReadCLIConfig(cliCtx),
+		MetricsConfig:  opmetrics.ReadCLIConfig(cliCtx),
+		BeaconConfig:   common.NewBeaconConfig(cliCtx),
+		StorageConfig:  common.NewStorageConfig(cliCtx),
+		UpstreamConfig: common.NewUpstreamConfig(cliCtx),
+		ListenAddr:     cliCtx.String(ListenAddressFlag.Name),
 	}
 }

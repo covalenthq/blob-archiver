@@ -24,6 +24,7 @@ type S3Config struct {
 	Endpoint string
 	UseHttps bool
 	Bucket   string
+	Prefix   string
 
 	S3CredentialType S3CredentialType
 	AccessKey        string
@@ -57,6 +58,10 @@ func (c S3Config) check() error {
 	return nil
 }
 
+type UpstreamConfig struct {
+	UpstreamURL string
+}
+
 type BeaconConfig struct {
 	BeaconURL           string
 	BeaconClientTimeout time.Duration
@@ -67,6 +72,12 @@ type StorageConfig struct {
 	DataStorageType      DataStorage
 	S3Config             S3Config
 	FileStorageDirectory string
+}
+
+func NewUpstreamConfig(cliCtx *cli.Context) UpstreamConfig {
+	return UpstreamConfig{
+		UpstreamURL: cliCtx.String(UpstreamHttpFlagName),
+	}
 }
 
 func NewBeaconConfig(cliCtx *cli.Context) BeaconConfig {
@@ -106,6 +117,7 @@ func readS3Config(ctx *cli.Context) S3Config {
 		SecretAccessKey:  ctx.String(S3SecretAccessKeyFlagName),
 		UseHttps:         ctx.Bool(S3EndpointHttpsFlagName),
 		Bucket:           ctx.String(S3BucketFlagName),
+		Prefix:           ctx.String(S3PrefixFlagName),
 		S3CredentialType: toS3CredentialType(ctx.String(S3CredentialTypeFlagName)),
 		Compress:         ctx.Bool(S3CompressFlagName),
 	}

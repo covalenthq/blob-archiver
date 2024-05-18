@@ -7,6 +7,7 @@ import (
 
 const (
 	BeaconHttpFlagName              = "l1-beacon-http"
+	UpstreamHttpFlagName            = "upstream-http"
 	BeaconHttpClientTimeoutFlagName = "l1-beacon-client-timeout"
 	BeaconHttpEnforceJson           = "l1-beacon-enforce-json"
 	DataStoreFlagName               = "data-store"
@@ -17,6 +18,7 @@ const (
 	S3AccessKeyFlagName             = "s3-access-key"
 	S3SecretAccessKeyFlagName       = "s3-secret-access-key"
 	S3BucketFlagName                = "s3-bucket"
+	S3PrefixFlagName                = "s3-prefix"
 	FileStorageDirectoryFlagName    = "file-directory"
 )
 
@@ -28,6 +30,12 @@ func CLIFlags(envPrefix string) []cli.Flag {
 			Usage:    "HTTP provider URL for L1 Beacon-node API",
 			Required: true,
 			EnvVars:  opservice.PrefixEnvVar(envPrefix, "L1_BEACON_HTTP"),
+		},
+		&cli.StringFlag{
+			Name:     UpstreamHttpFlagName,
+			Usage:    "Proxy unhandled requests to this URL (should be an L1 beacon-node)",
+			Required: false,
+			EnvVars:  opservice.PrefixEnvVar(envPrefix, "UPSTREAM_HTTP"),
 		},
 		&cli.StringFlag{
 			Name:     DataStoreFlagName,
@@ -76,6 +84,12 @@ func CLIFlags(envPrefix string) []cli.Flag {
 			Usage:   "The bucket to use",
 			Hidden:  true,
 			EnvVars: opservice.PrefixEnvVar(envPrefix, "S3_BUCKET"),
+		},
+		&cli.StringFlag{
+			Name:    S3PrefixFlagName,
+			Usage:   "The prefix to use",
+			Hidden:  true,
+			EnvVars: opservice.PrefixEnvVar(envPrefix, "S3_PREFIX"),
 		},
 		// File Data Store Flags
 		&cli.StringFlag{

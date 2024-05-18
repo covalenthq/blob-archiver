@@ -2,11 +2,17 @@ package storage
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
+	"slices"
+	"path"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/attestantio/go-eth2-client/spec/deneb"
 	"github.com/base-org/blob-archiver/common/flags"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -17,6 +23,7 @@ import (
 type S3Storage struct {
 	s3       *minio.Client
 	bucket   string
+	prefix   string
 	log      log.Logger
 	compress bool
 }
@@ -41,9 +48,23 @@ func NewS3Storage(cfg flags.S3Config, l log.Logger) (*S3Storage, error) {
 	return &S3Storage{
 		s3:       client,
 		bucket:   cfg.Bucket,
+		prefix:   cfg.Prefix,
 		log:      l,
 		compress: cfg.Compress,
 	}, nil
+}
+
+func (s *S3Storage) listPrefix(ctx context.Context, hash common.Hash) []minio.ObjectInfo {
+	results := make([]minio.ObjectInfo, 0)
+	for object := range s.s3.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: path.Join(s.prefix, hash.String()), Recursive: true}) {
+		results = append(results, object)
+	}
+	if len(results) > 0 {
+		slices.SortFunc(results, func(a, b minio.ObjectInfo) int {
+			return cmp.Compare(a.Key, b.Key)
+		})
+	}
+	return results
 }
 
 func (s *S3Storage) Exists(ctx context.Context, hash common.Hash) (bool, error) {
@@ -60,44 +81,83 @@ func (s *S3Storage) Exists(ctx context.Context, hash common.Hash) (bool, error) 
 	return true, nil
 }
 
+type fetchedBlob struct {
+	Index       int
+	BlobSidecar *deneb.BlobSidecar
+}
+
 func (s *S3Storage) Read(ctx context.Context, hash common.Hash) (BlobData, error) {
-	res, err := s.s3.GetObject(ctx, s.bucket, hash.String(), minio.GetObjectOptions{})
-	if err != nil {
-		s.log.Info("unexpected error fetching blob", "hash", hash.String(), "err", err)
-		return BlobData{}, ErrStorage
-	}
-	defer res.Close()
-	stat, err := res.Stat()
-	if err != nil {
-		errResponse := minio.ToErrorResponse(err)
-		if errResponse.Code == "NoSuchKey" {
-			s.log.Info("unable to find blob", "hash", hash.String())
-			return BlobData{}, ErrNotFound
-		} else {
-			s.log.Info("unexpected error fetching blob", "hash", hash.String(), "err", err)
-			return BlobData{}, ErrStorage
-		}
+	objInfos := s.listPrefix(ctx, hash)
+	if len(objInfos) == 0 {
+		s.log.Info("unable to find blob", "hash", hash.String())
+		return BlobData{}, ErrNotFound
 	}
 
-	var reader io.ReadCloser = res
-	defer reader.Close()
+	blobResultsCh := make(chan fetchedBlob, len(objInfos))
+	eg, egCtx := errgroup.WithContext(ctx)
 
-	if stat.Metadata.Get("Content-Encoding") == "gzip" {
-		reader, err = gzip.NewReader(reader)
-		if err != nil {
-			s.log.Warn("error creating gzip reader", "hash", hash.String(), "err", err)
-			return BlobData{}, ErrMarshaling
-		}
+	for i, objInfo := range objInfos {
+		i, objInfo := i, objInfo
+		eg.Go(func() error {
+			// s.log.Info("fetching blob", "i", i, "key", objInfo.Key)
+
+			res, err := s.s3.GetObject(egCtx, s.bucket, objInfo.Key, minio.GetObjectOptions{})
+			if err != nil {
+				s.log.Warn("unexpected error fetching blob", "key", objInfo.Key, "err", err)
+				return ErrStorage
+			}
+			defer res.Close()
+
+			var reader io.ReadCloser = res
+			defer reader.Close()
+
+			if objInfo.Metadata.Get("Content-Encoding") == "gzip" {
+				reader, err = gzip.NewReader(reader)
+				if err != nil {
+					s.log.Warn("error creating gzip reader", "key", objInfo.Key, "err", err)
+					return ErrMarshaling
+				}
+			}
+
+			var blobRecvBuf bytes.Buffer
+			blobRecvBuf.ReadFrom(reader)
+
+			data := new(deneb.BlobSidecar)
+
+			err = data.UnmarshalSSZ(blobRecvBuf.Bytes())
+			if err != nil {
+				s.log.Warn("error decoding blob", "key", objInfo.Key, "err", err)
+				return ErrMarshaling
+			}
+
+			// s.log.Info("got blob ph1", "i", i, "index", data.Index, "data", data.Blob[:12])
+			blobResultsCh <- fetchedBlob{i, data}
+
+			return nil
+		})
 	}
 
-	var data BlobData
-	err = json.NewDecoder(reader).Decode(&data)
-	if err != nil {
-		s.log.Warn("error decoding blob", "hash", hash.String(), "err", err)
-		return BlobData{}, ErrMarshaling
+	if err := eg.Wait(); err != nil {
+		return BlobData{}, err
 	}
 
-	return data, nil
+	close(blobResultsCh)
+
+	blobs := make([]*deneb.BlobSidecar, len(objInfos))
+	for aFetchedBlob := range blobResultsCh {
+		blobs[aFetchedBlob.Index] = aFetchedBlob.BlobSidecar
+	}
+
+	// s.log.Info("fetched blobs", "count", len(blobs))
+
+	// for i, blob := range blobs {
+	//	s.log.Info("got blob ph2", "i", i, "index", blob.Index, "data", blob.Blob[:12])
+	// }
+
+	return BlobData{
+		Header:       Header{BeaconBlockHash: hash},
+		BlobSidecars: BlobSidecars{Data: blobs},
+	}, nil
 }
 
 func (s *S3Storage) Write(ctx context.Context, data BlobData) error {

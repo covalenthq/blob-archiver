@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/base-org/blob-archiver/api/flags"
@@ -65,8 +66,16 @@ func Main() cliapp.LifecycleAction {
 			return nil, fmt.Errorf("failed to initialize beacon client: %w", err)
 		}
 
+		var upstreamURL *url.URL
+		if len(cfg.UpstreamConfig.UpstreamURL) > 0 {
+			upstreamURL, err = url.Parse(cfg.UpstreamConfig.UpstreamURL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize upstream client: %w", err)
+			}
+		}
+
 		l.Info("Initializing API Service")
-		api := service.NewAPI(storageClient, beaconClient, m, l)
+		api := service.NewAPI(storageClient, beaconClient, upstreamURL, m, l)
 		return service.NewService(l, api, cfg, m.Registry()), nil
 	}
 }

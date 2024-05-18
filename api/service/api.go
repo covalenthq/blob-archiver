@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -79,15 +82,19 @@ func newOutOfRangeError(input uint64, blobCount int) *httpError {
 type API struct {
 	dataStoreClient storage.DataStoreReader
 	beaconClient    client.BeaconBlockHeadersProvider
+	httpClient      *http.Client
+	upstreamURL     *url.URL
 	router          *chi.Mux
 	logger          log.Logger
 	metrics         m.Metricer
 }
 
-func NewAPI(dataStoreClient storage.DataStoreReader, beaconClient client.BeaconBlockHeadersProvider, metrics m.Metricer, logger log.Logger) *API {
+func NewAPI(dataStoreClient storage.DataStoreReader, beaconClient client.BeaconBlockHeadersProvider, upstreamURL *url.URL, metrics m.Metricer, logger log.Logger) *API {
 	result := &API{
 		dataStoreClient: dataStoreClient,
 		beaconClient:    beaconClient,
+		httpClient:      &http.Client{},
+		upstreamURL:     upstreamURL,
 		router:          chi.NewRouter(),
 		logger:          logger,
 		metrics:         metrics,
@@ -106,6 +113,10 @@ func NewAPI(dataStoreClient storage.DataStoreReader, beaconClient client.BeaconB
 	})
 
 	r.Get("/eth/v1/beacon/blob_sidecars/{id}", result.blobSidecarHandler)
+
+	if upstreamURL != nil {
+		r.NotFound(result.httpProxyHandler)
+	}
 
 	return result
 }
@@ -154,6 +165,60 @@ func (a *API) toBeaconBlockHash(id string) (common.Hash, *httpError) {
 		a.metrics.RecordBlockIdType(m.BlockIdTypeInvalid)
 		return common.Hash{}, newBlockIdError(id)
 	}
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"Trailers",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func delHopHeaders(header http.Header) {
+	for _, h := range hopHeaders {
+		header.Del(h)
+	}
+}
+
+func (a *API) httpProxyHandler(w http.ResponseWriter, r *http.Request) {
+	a.logger.Info("proxying http request", "method", r.Method, "path", r.URL.Path)
+
+	r.RequestURI = ""
+	r.Host = ""
+
+	delHopHeaders(r.Header)
+
+	r.URL.Scheme = a.upstreamURL.Scheme
+	r.URL.Host = a.upstreamURL.Host
+	r.URL.User = a.upstreamURL.User
+	r.URL.Path = path.Join(a.upstreamURL.Path, r.URL.Path)
+
+	resp, err := a.httpClient.Do(r)
+	if err != nil {
+		http.Error(w, "Server Error", http.StatusInternalServerError)
+		a.logger.Warn("http proxy upstream error", err)
+	}
+	defer resp.Body.Close()
+
+	delHopHeaders(resp.Header)
+
+	copyHeader(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 // blobSidecarHandler implements the /eth/v1/beacon/blob_sidecars/{id} endpoint, using the underlying DataStoreReader

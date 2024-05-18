@@ -234,11 +234,18 @@ func (a *API) blobSidecarHandler(w http.ResponseWriter, r *http.Request) {
 	result, storageErr := a.dataStoreClient.Read(r.Context(), beaconBlockHash)
 	if storageErr != nil {
 		if errors.Is(storageErr, storage.ErrNotFound) {
-			errUnknownBlock.write(w)
+			if a.upstreamURL != nil {
+				// if block is missing in dataStore, and we have an upstream configured,
+				// then fall back to proxying the request to it
+				a.httpProxyHandler(w, r)
+			} else {
+				errUnknownBlock.write(w)
+			}
 		} else {
 			a.logger.Info("unexpected error fetching blobs", "err", storageErr, "beaconBlockHash", beaconBlockHash.String(), "param", param)
 			errServerError.write(w)
 		}
+
 		return
 	}
 
